@@ -1,0 +1,573 @@
+---
+title: "低波動搭配動能_量化投資組合建構"
+author: "Neil LEE"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+     collapsed: false
+     smooth_scroll: false
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+<font face="微軟正黑體"> <font size = 4> 我的Github :
+<https://github.com/migue1neil/TW-telecompany-portfolio> <br>
+
+# 簡介
+在上次的電信三雄投資組合中，我們利用 R
+計算了報酬率，風險等指標，並且比較了電信三雄投資組合與0050的差異性，但是上次的比較中，僅使用期初開始投資到期末計算報酬率，未加入定期換股的動作，
+在本篇文章中，加入條件選股的功能，以及可以跟據每月，每季，每年的頻率進行換股，讓選股更具有即時性，與保持彈性。<br>
+在文章中利用，股價數據去計算波動性以及季線之方式進行定期換股，模擬出波動相對市場較低，報酬相對較佳之投資組合。
+```{r ,echo = FALSE}
+knitr::include_graphics("C:/Users/Neil/Documents/git-repos/backtest_in_R/quant/低波動動能投資組合/20130102_20220601低波動季線投組報酬.png")
+```
+在上圖中，我們可以看到，用兩個指標所設計出來的投資組合與市場報酬的比較。
+
+# 程式功能:
+
+可以跟據自己想的條件設定每月換股的股票
+
+# 資料來源與計算方式
+
+使用的資料為TEJ股價資料庫，還原股價資料，<br>
+期間為2013/01/02到2022/06/01<br> 總投資報酬率(total return)為 :
+期末股價-期初股價/期初股價<br> 年化報酬(annual return) : total
+return\^(1/n) ，n = 投資天數/365<br> 最大回落(Maxdrawdown) :
+1+r/cummax(1+r) - 1 低波動計算方式 : 近252日股價之標準差 /
+近252日股價之平均數 趨勢計算方式 : 股價 \>　60 日移動平均線 <br>
+
+```{r, include=FALSE}
+setwd("C:/Users/Neil/Documents/git-repos/backtest_in_R/quant") # 設定工作目錄
+```
+
+首先載入相關套件
+
+```{r , message=FALSE}
+# package_list = c("data.table","dplyr","plyr","readr","ggplot2","lubridate","tseries","magrittr","foreach","cowplot")
+library(data.table)
+library(dplyr)
+library(plyr)
+library(readr) #讀取檔案必備
+library(ggplot2) # 畫圖使用
+library(lubridate) #轉換日期使用 
+library(tseries) #會用到最大回落
+library(magrittr) # %>% 水管工人
+library(TTR) #我的超人，量化套件，結合dplyr使用可以快速分組做計算
+library(cowplot)
+```
+
+這邊是上篇文章中計算電信三雄投組所設計出來的功能，可以計算期初到期末的報酬率，本篇程式的目的著重在篩選時間，並且分批投入此函數，計算出每期報酬後再用累成方式算出期末報酬。
+
+```{r}
+source("portfolio_function.R" , encoding = "utf-8")
+source("caculate_index_function.R" , encoding = "utf-8")
+```
+
+載入整理好的股價資料
+
+```{r}
+table_data = fread("C:/Users/Neil/Documents/git-repos/backtest_in_R/stock_data/tidy_stock_price_data20000101_20220613.txt", encoding = "unknown" , header = T,sep = ",")
+table_data = table_data[年月日 > 20100101,]
+head(table_data)
+```
+
+在這邊我們要設定一些參數，方便在後面設計成function的時候採用
+
+```{r}
+start_day = 20130101         #投資開始日期
+end_day = 20220601           #投資結束日期
+discount = 0                 #券商手續費折舊
+trade_frequency = "season"   #投資頻率
+A = 100                      #起時投入的金額
+global_market_index = 0050   #要比較的標的
+```
+
+做完初步的設定後，我們需要使用R來設計量化投資的回測系統，首先，我們要先設定一個時間，知道要在哪個時間點買賣股票，同時避開假日。
+同時我們了解到資訊是有時間價值的，訊息公告越久會越不值錢。
+因此，我們希望可以設計一個功能，能在月報截止日的第一天買入，或者可以在季報截止日的第一天買入，又或者可以在年報截止日的第一天買入。
+
+```{r}
+trade_time_func = function( table_data , start_day = 20130101 , end_day = 20220101 , trade_frequency = "season" ){
+  #年報截止日
+  year_trade = c(0331)
+  #季報截止日
+  season_trade = c(0331,0515,0814,1114)
+  #月營收截止日
+  monthly_trade = seq(from = 110 , to = 1210 , by = 100) #每個月10號
+  #設計一個要月交易還是季交易的判斷式
+  #trade_frequency
+  check_day = 0
+  trade_frequency = trade_frequency %>% tolower()
+  if(trade_frequency == "month"){
+    check_day = 1
+    trade_frequency = monthly_trade
+  }else if (trade_frequency == "season"){
+    trade_frequency = season_trade
+  }else if (trade_frequency == "year"){
+    trade_frequency = year_trade
+  }else{
+    print("設定頻率可能有錯，請檢查 ~")
+    break
+  }
+  
+  # 找出最後end_day前的最後一筆交易日  
+  end_day = subset(table_data$年月日,table_data$年月日 <= end_day) %>% max() %>% as.numeric()
+  year = c( year(ymd(start_day)) : year(ymd(end_day)) )  #取出年，用Vector c(起始年:結束年)
+
+  #檢查交易日，生成一個要交易的日期，會根據上面上定的條件，產生一筆交易日期
+  trade_day = data.frame(年月日 = NA)
+  for (i in year){
+    for (j in trade_frequency){
+      dd = subset(table_data$年月日, table_data$年月日 >= (i*10000+j))[1]
+    trade_day = rbind( trade_day,dd )
+    }
+  }
+  trade_day = na.omit(trade_day)
+  rownames(trade_day) = NULL
+  
+  # 生產一個買入日期和賣出日期的df，假設不是持有N天，而是每期都把上期的東西賣掉，重新買入新的。
+  trade_pair = data.frame(買 = NA ,賣 = NA)
+  for (i in c(1:length(trade_day$年月日))){
+  tmp = data.frame(買 = trade_day$年月日[i])
+  tmp$賣 = trade_day$年月日[i+1] #幫tmp生成一個賣
+  trade_pair = rbind(trade_pair,tmp)
+  }
+  # 如果時間提前結束的話最後一筆交易日是空的，所以要拿截止時間點當賣出的資料補齊
+  trade_pair$賣[length(trade_pair$賣)] = end_day #將最後一筆資料放到dataframe裡面，
+  trade_pair = trade_pair %>% na.omit()
+  rownames(trade_pair) = NULL # reset index
+  
+  if(check_day == 1){  
+    if ( length(which(trade_pair$買 > trade_pair$賣)) > 0 ){  #檢查如果最後一天小於買入日期的話要修正
+      trade_pair = trade_pair[-nrow(trade_pair),]
+      trade_pair$賣[length(trade_pair$賣)] = end_day
+    }
+  }
+  return(trade_pair)
+}
+```
+
+設計完上面的函數之後，我們可以得到買入日期和賣出日期
+
+```{r}
+trade_pair = trade_time_func(table_data , start_day = start_day , end_day = end_day , trade_frequency = trade_frequency )  
+trade_day = trade_pair$買
+head(trade_pair)
+```
+
+有了這些日期之後，就要設計一個function，根據上面篩選好的日期篩選，把每次要交易的"那一天"股票篩選出來，最後在合併成一個list格式，形成一個每期要買入股票的表格
+
+```{r}
+standby_stock_list = data.table()
+  for(i in   1:length(trade_day)){
+    buy_day= trade_day[i] # buy_day會等於那一天的資料
+    tmp_a = table_data[table_data$年月日 == buy_day,]  # 目的:生產出要買進股票那一天的資料
+    tmp_a = tmp_a %>% na.omit() # 移除空值
+    
+    # 篩選開始
+     tmp_a = tmp_a %>% filter(TSE產業別 > 0) # 剔除非正常的股票，例如ETF和債券
+     tmp_a = tmp_a %>% filter(證券代碼 > 1000 & 證券代碼< 10000) # 同上
+     tmp_a = tmp_a %>% filter(tmp_a$Price_MA_20 > 10) #排除雞蛋水餃股
+     tmp_a = tmp_a[tmp_a$成交張數 > 300 ,] #流動性，排除流動性不佳的股票，避免買不到
+     tmp_a = tmp_a[tmp_a$調整收盤價 > tmp_a$Price_MA_60, ] #季線上 動能
+     cardinal = order(tmp_a$CV股價離散程度, decreasing = F) #依照CV做排序，由小排到大
+    # 篩選結束 
+     
+    # 收集篩選出來的股票資料
+    tmp_a = tmp_a[cardinal,]
+    rownames(tmp_a) = NULL
+    tmp_a = tmp_a[1:30,] # 取前30隻最大的股票 
+    tmp_b = data.table(stock_list = tmp_a$證券代碼) #收集這30隻的證券代碼
+    standby_stock_list = cbind(standby_stock_list,tmp_b) #匯出
+  }
+head(standby_stock_list)
+```
+
+接著把上面的表格放到(portfolio_func)回測裡面，分批算出每期的報酬指數。此外，若選出的股票期末沒有股價資料，有可能是被併購或是下市，直接以零(-100%)做計算。
+
+```{r}
+log_trade_list = data.table()
+log_portfolio_stock_trade = data.table()
+each_portfolio_return_rate = data.table()
+  for(i in  1:length(standby_stock_list)  ){
+    aa = standby_stock_list[,i , with = FALSE] %>% na.omit() 
+    aa = aa$stock_list %>% as.vector()
+    bb = trade_pair$買[i]
+    cc = trade_pair$賣[i]
+    dd = portfolio_function(table_data, start_day = bb , end_day = cc , stock_list = aa , A = A ,discount = discount, global_market_index = global_market_index)
+    log_trade_list = rbind(log_trade_list,dd[[1]])
+    log_portfolio_stock_trade = rbind(log_portfolio_stock_trade,dd[[2]])
+    each_portfolio_return_rate = rbind(each_portfolio_return_rate, dd[[3]])
+  }
+```
+
+計算完成後可以得到三張表格，分別是每天交易的漲跌幅紀錄
+
+```{r}
+head(log_trade_list)
+```
+
+和每檔股票進出場賺到的報酬
+
+```{r}
+head(log_portfolio_stock_trade)
+```
+
+以及投資組合與市場標的的報酬指數比較
+
+```{r}
+head(each_portfolio_return_rate)
+```
+
+其實這樣就差不多大功告成了，但我們需要近一步計算整個投組的風險報酬指標以及畫圖來做比較
+
+```{r}
+# 把每隻股票日報酬平均之後合併的df，這樣這張df就會有每天分配過後的漲跌幅，用他算報酬。
+  each_portfolio_return_rate$投組累積報酬 = (cumprod( each_portfolio_return_rate$分配後的漲跌幅+1 ) -1) %>% round(digits = 4)
+  each_portfolio_return_rate$分配後的漲跌幅 = each_portfolio_return_rate$分配後的漲跌幅 %>% round(digits = 4)
+  each_portfolio_return_rate$市場累積報酬 = (cumprod( each_portfolio_return_rate$市場漲跌幅+1 ) -1) %>% round(digits = 4)
+  each_portfolio_return_rate$市場漲跌幅 = each_portfolio_return_rate$市場漲跌幅 %>% round(digits = 4)
+  
+  # 畫DD線
+  each_portfolio_return_rate$dd =  ((1+each_portfolio_return_rate$投組累積報酬)/cummax(1+each_portfolio_return_rate$投組累積報酬))-1
+  #min(each_portfolio_return_rate$dd)
+  #plot(each_portfolio_return_rate$dd)
+  
+  # 總報酬
+  pf_total_return = each_portfolio_return_rate$投組累積報酬[length(each_portfolio_return_rate$投組累積報酬)]
+  market_total_return = each_portfolio_return_rate$市場累積報酬[length(each_portfolio_return_rate$市場累積報酬)]
+  
+  # 年化報酬
+  year = length(each_portfolio_return_rate$投組累積報酬) / 252
+  pf_annual_return = ( (1+pf_total_return)^(1/year) -1 ) %>% round(digits = 3)
+  market_annual_return = ( (1+market_total_return)^(1/year) -1 ) %>% round(digits = 3)
+  return_df = data.table(投組總報酬 = pf_total_return , 投組年化報酬 = pf_annual_return , 
+                              市場總報酬 = market_total_return , 市場年化報酬 = market_annual_return)
+  
+  # 最大回落
+  each_portfolio_return_rate$投組累積報酬指數 = each_portfolio_return_rate$投組累積報酬+1
+  mdd = maxdrawdown(each_portfolio_return_rate$投組累積報酬指數)
+  mdd_ratio = (each_portfolio_return_rate$投組累積報酬指數[mdd$to] - each_portfolio_return_rate$投組累積報酬指數[mdd$from]) / each_portfolio_return_rate$投組累積報酬指數[mdd$from]
+  mdd_ratio = round(mdd_ratio,digits = 3)
+  mdd_start_day = each_portfolio_return_rate$年月日[mdd$from] #最大回落高點日期
+  mdd_end_day = each_portfolio_return_rate$年月日[mdd$to] #最大回落低點日期
+  mdd_during_period = (mdd_end_day - mdd_start_day) %>% as.numeric()   #回落時間
+  each_portfolio_return_rate$市場累積報酬指數 = each_portfolio_return_rate$市場累積報酬+1
+  mdd = maxdrawdown(each_portfolio_return_rate$市場累積報酬指數)
+  market_mdd_ratio = (each_portfolio_return_rate$市場累積報酬指數[mdd$to] - each_portfolio_return_rate$市場累積報酬指數[mdd$from]) / each_portfolio_return_rate$市場累積報酬指數[mdd$from] %>%   round(digits = 3)
+  market_mdd_ratio = round(market_mdd_ratio,digits = 3)
+  mdd_df = data.table(投組最大回落 = mdd_ratio , 回落開始日期 =  mdd_start_day ,
+                            回落結束日期 = mdd_end_day , 回落持續天數 = mdd_during_period , 市場最大回落 = market_mdd_ratio)
+  
+  # 勝率
+  winning_percentage = data.table(平均勝率 = mean(log_trade_list$勝率)) %>% round(digits = 2)
+  
+  # 把指標打包起來
+  trade_period = data.table(投資開始日期 = start_day , 投資結束日期 = end_day)
+  trading_ndays = data.table(交易次數 = unique(log_portfolio_stock_trade$買入時間) %>% length() )
+  n_stock = data.table(平均投資檔數 = mean(log_trade_list$投資股票數量))
+  log_correct_portfolio_final_report = data.table( trade_period, return_df , mdd_df , 
+                                            winning_percentage , trading_ndays , n_stock ) 
+  
+  # 統計股票出現次數
+  stock_appear_count_list = log_portfolio_stock_trade$證券代碼 
+  stock_appear_count_list = table(stock_appear_count_list) %>% as.data.table()
+  colnames(stock_appear_count_list) = c("證券代碼","出現次數")
+  stock_appear_count_list$證券代碼 = stock_appear_count_list$證券代碼 %>% as.numeric()
+  log_portfolio_stock_trade = merge(log_portfolio_stock_trade, stock_appear_count_list , by = "證券代碼")
+  
+  # 把df打包成list，方便之後設計成函數 return
+  log_list_package = list( log_correct_portfolio_final_report , log_trade_list , log_portfolio_stock_trade )
+```
+
+算完之後，我們大致上可以得到(1)投資總表，查看整個投資期間的報酬與風險變化如何。從圖表中我們可以觀察到，使用低波動方式的投組，每年的年化報酬有17%，最大跌幅有約25%，相較於市場，年化報酬13%，最大回落18%，可犧牲了波動性換得更大的報酬
+
+```{r}
+log_final_report = log_list_package[[1]]
+log_final_report
+```
+
+(2)投資日誌，每期的投資狀況，方便日後檢查的時候快速查找哪裡有異常報酬或異常波動。
+
+```{r}
+log_trade_list = log_list_package[[2]]
+head(log_trade_list)
+```
+
+(3)個股報酬統計，可以看每檔股票的買入和賣出時間，這段期間持有多少報酬和總共在投資期間中出現幾次。
+
+```{r}
+log_portfolio_stock_trade = log_list_package[[3]]
+head(log_portfolio_stock_trade)
+```
+
+最後來畫張圖看一下，投資組合和市場的差異
+
+```{r}
+  return_index_image = ggplot(each_portfolio_return_rate , aes(x = 年月日)) +
+    geom_line(aes(y = 投組累積報酬, color = "Portfolio Return")) +
+    geom_line(aes(y = 市場累積報酬, color = "Market Return" )) +
+    ggtitle("投資組合報酬與市場比較") +
+    xlab("投資期間") +
+    ylab("投資累積報酬率 %" ) +
+    scale_color_manual("", values = c("Portfolio Return" = "blue" , "Market Return" = "red" )) +
+    theme(
+      legend.position = "bottom"
+    )  
+  drawdown_image = ggplot(each_portfolio_return_rate , aes(x = 年月日)) +
+     geom_line(aes(y = dd , color = "Drawdown"  )   ) +
+     ggtitle("Downdise Risk") +
+     xlab("投資期間") +
+     ylab("Drawdown Rate ")+
+     scale_color_manual("", values = c("Drawdown" = "black")) +
+     theme(
+        legend.position = "bottom"
+     )
+   combine_image = plot_grid( return_index_image, drawdown_image ,nrow = 2 , align = "v" , rel_heights = c(2,1))
+combine_image
+```
+
+將上述功能打包成函數之後可以快速執行回測，雖然如果要改條件還是要點開來改QAQ，但是回測不求快，應該定期檢驗績效就可以了
+
+```{r 打包帶走}
+quant_func = function(table_data, start_day , end_day , A = 100 , global_market_index = 0050 , discount = 0 , trade_frequency = "season" ){
+  exe_time = print(Sys.time())
+  # 交易時間篩選
+  trade_time_func = function( table_data , start_day = 20130101 , end_day = 20220101 , trade_frequency = "season" ){
+  #指交易一次 : 開發中，比較不重要
+  once_trade = c()  
+  #年報截止日
+  year_trade = c(0331)
+  #季報截止日
+  season_trade = c(0331,0515,0814,1114)
+  #月營收截止日
+  monthly_trade = seq(from = 110 , to = 1210 , by = 100) #每個月10號
+  #設計一個要月交易還是季交易的判斷式
+  #trade_frequency
+  check_day = 0
+  trade_frequency = trade_frequency %>% tolower()
+  if(trade_frequency == "month"){
+    check_day = 1
+    trade_frequency = monthly_trade
+  }else if (trade_frequency == "season"){
+    trade_frequency = season_trade
+  }else if (trade_frequency == "year"){
+    trade_frequency = year_trade
+  }else{
+    print("設定頻率可能有錯，請檢查 ~")
+    break
+  }
+  # 找出指定日期的第一筆時間
+  # 筆記 subset 是vector的篩選函數
+
+  # 找出最後end_day前的最後一筆交易日  
+  end_day = subset(table_data$年月日,table_data$年月日 <= end_day) %>% max() %>% as.numeric()
+  year = c( year(ymd(start_day)) : year(ymd(end_day)) )  #取出年，用Vector c(起始年:結束年)
+
+  #檢查交易日，生成一個要交易的日期，會根據上面上定的條件，產生一筆交易日期
+  trade_day = data.frame(年月日 = NA)
+  for (i in year){
+    for (j in trade_frequency){
+      dd = subset(table_data$年月日, table_data$年月日 >= (i*10000+j))[1]
+    trade_day = rbind( trade_day,dd )
+    }
+  }
+  trade_day = na.omit(trade_day)
+  rownames(trade_day) = NULL
+  
+  # 生產一個買入日期和賣出日期的df，假設不是持有N天，而是每期都把上期的東西賣掉，重新買入新的。
+  trade_pair = data.frame(買 = NA ,賣 = NA)
+  for (i in c(1:length(trade_day$年月日))){
+  # cat("***************","\n")
+  # cat("買",trade_day$年月日[i],"\n")
+  # cat("賣",trade_day$年月日[i+1],"\n")
+  # cat("***************","\n")
+  tmp = data.frame(買 = trade_day$年月日[i])
+  tmp$賣 = trade_day$年月日[i+1] #幫tmp生成一個賣
+  trade_pair = rbind(trade_pair,tmp)
+  }
+  # 如果時間提前結束的話最後一筆交易日是空的，所以要拿截止時間點當賣出的資料補齊
+  trade_pair$賣[length(trade_pair$賣)] = end_day # 將最後一筆資料放到df，
+  trade_pair = trade_pair %>% na.omit()
+  rownames(trade_pair) = NULL # reset index
+  
+  if(check_day == 1){  
+    if ( length(which(trade_pair$買 > trade_pair$賣)) > 0 ){  #檢查如果最後一天小於買入日期的話要修正
+      trade_pair = trade_pair[-nrow(trade_pair),]
+      trade_pair$賣[length(trade_pair$賣)] = end_day
+    }
+  }
+  return(trade_pair)
+}
+  trade_pair = trade_time_func(table_data , start_day = start_day , end_day = end_day , trade_frequency = trade_frequency )  
+  trade_day = trade_pair$買
+  
+  # 篩出stock list，設計一個for迴圈，把每次交易日要篩選的股票篩選出來，在合併，形成一籃子要交易的股票
+  # 篩選的回合，根據上面給出的交易日期，使用迴圈方式，把每期要交易的股票篩選出來
+  i = 1 
+
+  standby_stock_list = data.table()
+  for(i in   1:length(trade_day)){
+    buy_day= trade_day[i] #buy_day會等於那一天的資料
+    tmp_a = table_data[table_data$年月日 == buy_day,]  #目的:生產出要買進股票那一天的資料，TEJ的話感覺可以不用改
+    tmp_a = tmp_a %>% na.omit()
+    #####篩選環節 先用抵著
+     #基本過濾
+     #cardinal = order(tmp_a$調整收盤價, decreasing = T) # 範例 #排序當天的股票 收盤價最高的 
+     tmp_a = tmp_a %>% filter(TSE產業別 > 0)  
+     tmp_a = tmp_a %>% filter(證券代碼 > 1000 & 證券代碼< 10000)
+     tmp_a = tmp_a %>% filter(tmp_a$Price_MA_20 > 10) #排除雞蛋水餃股
+     tmp_a = tmp_a[tmp_a$調整收盤價 > tmp_a$Price_MA_60, ] #季線上 動能
+     tmp_a = tmp_a[tmp_a$成交張數 > 300 ,] #流動性
+     cardinal = order(tmp_a$CV股價離散程度, decreasing = F) #依照CV做排序，由小排到大
+     #財報數據篩選
+     tmp_a$rank_ROE = rank(tmp_a$ROE)
+     tmp_a$rank_ROA = rank(tmp_a$ROA)
+     tmp_a$rank_營業毛利率 = rank(tmp_a$營業毛利率)
+     tmp_a$rank_GPOA = rank(tmp_a$GPOA)
+     tmp_a$rank_CFOA = rank(tmp_a$CFOA)
+     #tmp_a$rank_ACC = rank(tmp_a$ACC應計項目) #這個不知道要怎麼使用先不做計算
+     tmp_a$total_rank = tmp_a$rank_ROE + tmp_a$rank_ROA + tmp_a$rank_營業毛利率 + tmp_a$rank_GPOA + tmp_a$rank_CFOA 
+    #錯的 tmp_a$total_rank = sum(tmp_a$rank_ROE,tmp_a$rank_ROA, tmp_a$rank_營業毛利率, tmp_a$rank_GPOA,tmp_a$rank_CFOA )
+     #cardinal = order(tmp_a$股價年標準差, decreasing = F ) 
+     #tmp_a = tmp_a[證券代碼 == 0050 ,]
+ 
+    #####篩選結束
+    # 收集篩選出來的股票資料，難的地方在於對於list不熟，只能用df硬轉
+    tmp_a = tmp_a[cardinal,]
+    rownames(tmp_a) = NULL
+    tmp_a = tmp_a[1:30,] #前30隻最大的股票 
+    tmp_b = data.table(stock_list = tmp_a$證券代碼) #收集這30隻的證券代碼
+    standby_stock_list = cbind(standby_stock_list,tmp_b) #匯出
+  }
+ 
+  # 把每期的股票丟到(portfolio_func)回測裡面，
+  log_trade_list = data.table()
+  log_portfolio_stock_trade = data.table()
+  each_portfolio_return_rate = data.table()
+  for(i in  1:length(standby_stock_list)  ){
+    aa = standby_stock_list[,i , with = FALSE] %>% na.omit() #不知道為什麼要這樣寫才可以提取出來
+    aa = aa$stock_list %>% as.vector()
+    bb = trade_pair$買[i]
+    cc = trade_pair$賣[i]
+    dd = portfolio_function(table_data, start_day = bb , end_day = cc , stock_list = aa , A = A ,discount = discount, global_market_index = global_market_index)
+    log_trade_list = rbind(log_trade_list,dd[[1]])
+    log_portfolio_stock_trade = rbind(log_portfolio_stock_trade,dd[[2]])
+    each_portfolio_return_rate = rbind(each_portfolio_return_rate, dd[[3]] )
+  }
+
+  # 把每隻股票日報酬平均之後合併的df，這樣這張df就會有每天分配過後的漲跌幅，用他算報酬。
+  each_portfolio_return_rate$投組累積報酬 = (cumprod( each_portfolio_return_rate$分配後的漲跌幅+1 ) -1) %>% round(digits = 4)
+  each_portfolio_return_rate$分配後的漲跌幅 = each_portfolio_return_rate$分配後的漲跌幅 %>% round(digits = 4)
+  each_portfolio_return_rate$市場累積報酬 = (cumprod( each_portfolio_return_rate$市場漲跌幅+1 ) -1) %>% round(digits = 4)
+  each_portfolio_return_rate$市場漲跌幅 = each_portfolio_return_rate$市場漲跌幅 %>% round(digits = 4)
+  
+  # 畫DD線
+  each_portfolio_return_rate$dd =  ((1+each_portfolio_return_rate$投組累積報酬)/cummax(1+each_portfolio_return_rate$投組累積報酬))-1
+  #min(each_portfolio_return_rate$dd)
+  #plot(each_portfolio_return_rate$dd)
+  
+  # 總報酬
+  pf_total_return = each_portfolio_return_rate$投組累積報酬[length(each_portfolio_return_rate$投組累積報酬)]
+  market_total_return = each_portfolio_return_rate$市場累積報酬[length(each_portfolio_return_rate$市場累積報酬)]
+  
+  # 年化報酬
+  year = length(each_portfolio_return_rate$投組累積報酬) / 252
+  pf_annual_return = ( (1+pf_total_return)^(1/year) -1 ) %>% round(digits = 3)
+  market_annual_return = ( (1+market_total_return)^(1/year) -1 ) %>% round(digits = 3)
+  return_df = data.table(投組總報酬 = pf_total_return , 投組年化報酬 = pf_annual_return , 
+                              市場總報酬 = market_total_return , 市場年化報酬 = market_annual_return)
+  
+  # 最大回落
+  each_portfolio_return_rate$投組累積報酬指數 = each_portfolio_return_rate$投組累積報酬+1
+  mdd = maxdrawdown(each_portfolio_return_rate$投組累積報酬指數)
+  mdd_ratio = (each_portfolio_return_rate$投組累積報酬指數[mdd$to] - each_portfolio_return_rate$投組累積報酬指數[mdd$from]) / each_portfolio_return_rate$投組累積報酬指數[mdd$from]
+  mdd_ratio = round(mdd_ratio,digits = 3)
+  mdd_start_day = each_portfolio_return_rate$年月日[mdd$from] #最大回落高點日期
+  mdd_end_day = each_portfolio_return_rate$年月日[mdd$to] #最大回落低點日期
+  mdd_during_period = (mdd_end_day - mdd_start_day) %>% as.numeric()   #回落時間
+  each_portfolio_return_rate$市場累積報酬指數 = each_portfolio_return_rate$市場累積報酬+1
+  mdd = maxdrawdown(each_portfolio_return_rate$市場累積報酬指數)
+  market_mdd_ratio = (each_portfolio_return_rate$市場累積報酬指數[mdd$to] - each_portfolio_return_rate$市場累積報酬指數[mdd$from]) / each_portfolio_return_rate$市場累積報酬指數[mdd$from] %>% round(digits = 3)
+  market_mdd_ratio = round(market_mdd_ratio,digits = 3)
+  mdd_df = data.table(投組最大回落 = mdd_ratio , 回落開始日期 =  mdd_start_day ,
+                            回落結束日期 = mdd_end_day , 回落持續天數 = mdd_during_period , 市場最大回落 = market_mdd_ratio)
+  
+  # 勝率
+  winning_percentage = data.table(平均勝率 = mean(log_trade_list$勝率)) %>% round(digits = 2)
+  
+  # 把指標打包起來
+  trade_period = data.table(投資開始日期 = start_day , 投資結束日期 = end_day)
+  trading_ndays = data.table(交易次數 = unique(log_portfolio_stock_trade$買入時間) %>% length() )
+  n_stock = data.table(平均投資檔數 = mean(log_trade_list$投資股票數量))
+  log_correct_portfolio_final_report = data.table( trade_period, return_df , mdd_df , 
+                                            winning_percentage , trading_ndays , n_stock ) 
+  
+  # 統計股票出現次數
+  stock_appear_count_list = log_portfolio_stock_trade$證券代碼 
+  stock_appear_count_list = table(stock_appear_count_list) %>% as.data.table()
+  colnames(stock_appear_count_list) = c("證券代碼","出現次數")
+  stock_appear_count_list$證券代碼 = stock_appear_count_list$證券代碼 %>% as.numeric()
+  log_portfolio_stock_trade = merge(log_portfolio_stock_trade, stock_appear_count_list , by = "證券代碼")
+  #cardinal = order(log_portfolio_stock_trade$出現次數, decreasing = T ) 
+  #rownames(log_portfolio_stock_trade) = NULL
+   
+  # 把df打包成list，方便之後return
+  list_package = list( log_correct_portfolio_final_report , log_trade_list , log_portfolio_stock_trade )
+  
+ #畫圖的部分
+  return_index_image = ggplot(each_portfolio_return_rate , aes(x = 年月日)) +
+    geom_line(aes(y = 投組累積報酬, color = "Portfolio Return")) +
+    geom_line(aes(y = 市場累積報酬, color = "Market Return" )) +
+    ggtitle("投資組合報酬與市場比較") +
+    xlab("投資期間") +
+    ylab("投資累積報酬率 %" ) +
+    scale_color_manual("", values = c("Portfolio Return" = "blue" , "Market Return" = "red" )) +
+    theme(
+      legend.position = "bottom"
+    )  
+  drawdown_image = ggplot(each_portfolio_return_rate , aes(x = 年月日)) +
+     geom_line(aes(y = dd , color = "Drawdown"  )   ) +
+     ggtitle("Downdise Risk") +
+     xlab("投資期間") +
+     ylab("Drawdown Rate ")+
+     scale_color_manual("", values = c("Drawdown" = "black")) +
+     theme(
+        legend.position = "bottom"
+     )
+   combine_image = plot_grid( return_index_image, drawdown_image ,nrow = 2 , align = "v" , rel_heights = c(2,1))
+   print(combine_image)
+
+  gc()
+  print(Sys.time()-exe_time )
+return(list_package)
+}
+
+log_list_package = quant_func(table_data , start_day = 20130101 , end_day = 20220601 , trade_frequency = "season")
+log_final_report = log_list_package[[1]]
+log_trade_list = log_list_package[[2]]
+log_portfolio_stock_trade = log_list_package[[3]]
+```
+
+從圖中可以得知在大多數情況下，此投組績效略優於大盤，此外，本次僅使用股價波動與趨勢當作買賣依據使用，並未使用基本面等財報資訊，未來可以再加入品質因子來看看近幾年台股投組的績效如何，並加以優化自己的策略。
+
+<br> <br> <br>
+
+------------------------------------------------------------------------
+
+<footer>
+
+<p>
+
+© 2022 Neil
+
+</p>
+
+<!-- A footer for the page. -->
+
+</footer>
+
+</font> </font>

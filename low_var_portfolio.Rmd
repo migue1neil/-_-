@@ -13,25 +13,25 @@ editor_options:
     wrap: 72
 ---
 
-<font face="微軟正黑體"> <font size = 4> 我的Github :
-<https://github.com/migue1neil/TW-telecompany-portfolio> <br>
+<font size = 4> 
+我的Github :
+<https://github.com/migue1neil/low-volatility_momentum_portfolio> <br>
 
 # 簡介
 在上次的電信三雄投資組合中，我們利用 R
 計算了報酬率，風險等指標，並且比較了電信三雄投資組合與0050的差異性，但是上次的比較中，僅使用期初開始投資到期末計算報酬率，未加入定期換股的動作，
 在本篇文章中，加入條件選股的功能，以及可以跟據每月，每季，每年的頻率進行換股，讓選股更具有即時性，與保持彈性。<br>
-在文章中利用，股價數據去計算波動性以及季線之方式進行定期換股，模擬出波動相對市場較低，報酬相對較佳之投資組合。
-```{r ,echo = FALSE}
-knitr::include_graphics("C:/Users/Neil/Documents/git-repos/backtest_in_R/quant/低波動動能投資組合/20130102_20220601低波動季線投組報酬.png")
+在文章中利用，股價數據去計算波動性以及季線之方式進行定期換股，模擬出波動相對市場較高(投組25%,市場18%)，報酬相對較佳之投資組合(投組18%,市場13%)。<br>
+```{r ,echo = FALSE, out.width='100%'}
+knitr::include_graphics("C:/Users/Neil/Documents/git-repos/backtest_in_R/低波動_動能投資組合/20130102_20220601低波動季線投組報酬.png")
 ```
-在上圖中，我們可以看到，用兩個指標所設計出來的投資組合與市場報酬的比較。
+<br>
+在上圖中，我們可以看到，用兩個指標所設計出來的投資組合與市場報酬的比較。從圖中可以得知在大多數情況下，此投組績效略優於大盤，此外，本次僅使用股價波動與趨勢當作買賣依據使用，並未使用基本面等財報資訊，未來可以再加入品質因子來看看近幾年台股投組的績效如何，並加以優化自己的策略。
 
 # 程式功能:
-
-可以跟據自己想的條件設定每月換股的股票
+可以根據自己想的條件設定每月換股的股票
 
 # 資料來源與計算方式
-
 使用的資料為TEJ股價資料庫，還原股價資料，<br>
 期間為2013/01/02到2022/06/01<br> 總投資報酬率(total return)為 :
 期末股價-期初股價/期初股價<br> 年化報酬(annual return) : total
@@ -45,7 +45,7 @@ setwd("C:/Users/Neil/Documents/git-repos/backtest_in_R/quant") # 設定工作目
 
 首先載入相關套件
 
-```{r , message=FALSE}
+```{r , message=FALSE ,warning=FALSE}
 # package_list = c("data.table","dplyr","plyr","readr","ggplot2","lubridate","tseries","magrittr","foreach","cowplot")
 library(data.table)
 library(dplyr)
@@ -55,7 +55,7 @@ library(ggplot2) # 畫圖使用
 library(lubridate) #轉換日期使用 
 library(tseries) #會用到最大回落
 library(magrittr) # %>% 水管工人
-library(TTR) #我的超人，量化套件，結合dplyr使用可以快速分組做計算
+library(TTR) #量化套件，結合dplyr使用可以快速分組做計算
 library(cowplot)
 ```
 
@@ -84,7 +84,7 @@ trade_frequency = "season"   #投資頻率
 A = 100                      #起時投入的金額
 global_market_index = 0050   #要比較的標的
 ```
-
+# 時間參數設計
 做完初步的設定後，我們需要使用R來設計量化投資的回測系統，首先，我們要先設定一個時間，知道要在哪個時間點買賣股票，同時避開假日。
 同時我們了解到資訊是有時間價值的，訊息公告越久會越不值錢。
 因此，我們希望可以設計一個功能，能在月報截止日的第一天買入，或者可以在季報截止日的第一天買入，又或者可以在年報截止日的第一天買入。
@@ -157,7 +157,7 @@ trade_pair = trade_time_func(table_data , start_day = start_day , end_day = end_
 trade_day = trade_pair$買
 head(trade_pair)
 ```
-
+# 篩選投資標的
 有了這些日期之後，就要設計一個function，根據上面篩選好的日期篩選，把每次要交易的"那一天"股票篩選出來，最後在合併成一個list格式，形成一個每期要買入股票的表格
 
 ```{r}
@@ -185,7 +185,7 @@ standby_stock_list = data.table()
   }
 head(standby_stock_list)
 ```
-
+# 分批投入回測
 接著把上面的表格放到(portfolio_func)回測裡面，分批算出每期的報酬指數。此外，若選出的股票期末沒有股價資料，有可能是被併購或是下市，直接以零(-100%)做計算。
 
 ```{r}
@@ -221,7 +221,7 @@ head(log_portfolio_stock_trade)
 ```{r}
 head(each_portfolio_return_rate)
 ```
-
+# 投組報酬計算
 其實這樣就差不多大功告成了，但我們需要近一步計算整個投組的風險報酬指標以及畫圖來做比較
 
 ```{r}
@@ -304,6 +304,7 @@ log_portfolio_stock_trade = log_list_package[[3]]
 head(log_portfolio_stock_trade)
 ```
 
+# 圖表製作
 最後來畫張圖看一下，投資組合和市場的差異
 
 ```{r}
@@ -554,7 +555,9 @@ log_portfolio_stock_trade = log_list_package[[3]]
 
 從圖中可以得知在大多數情況下，此投組績效略優於大盤，此外，本次僅使用股價波動與趨勢當作買賣依據使用，並未使用基本面等財報資訊，未來可以再加入品質因子來看看近幾年台股投組的績效如何，並加以優化自己的策略。
 
-<br> <br> <br>
+<br> 
+<br>
+<br>
 
 ------------------------------------------------------------------------
 

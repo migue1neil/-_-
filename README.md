@@ -1,2 +1,9 @@
-# low-volatility_momentum_portfolio
- 
+# 低波動配合趨勢線之投資組合建構
+# 簡介
+網頁好讀版 : https://wellcomepage-chechih-portfolio.on.drv.tw/my_portfolio/low_var_portfolio.html (上面也有html檔可供參閱)
+
+在文章中利用股價資料庫，嘗試設計出定期換股的投資組合，並選出每期股價波動最低+在季線之上的股票作為例子，
+模擬出波動相對市場較高(投組25%,市場18%)，報酬相對較佳之投資組合(投組18%,市場13%)。
+
+# 程式功能
+設計條件選股的功能，以及可以跟據每月，每季，每年的頻率進行換股，讓選股更具有即時性，與保持彈性。
